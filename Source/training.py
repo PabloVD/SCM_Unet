@@ -1,8 +1,6 @@
-
-#from Source.rigid_body import *
 from Source.utils import *
-from Source.visualize import *
-from torch_scatter import scatter
+#from Source.visualize import *
+from tqdm import tqdm
 
 rig_soil_fact = 1. #1.
 sample_loss = False
@@ -36,9 +34,15 @@ def singlestep(model, data, train=True, use_noise=True):
     def_true = data.def_true
 
     if train and data_aug:
-        hmap, def_true = dataaug(hmap, def_true)
+        hmap, def_true, glob = data_augmentation(hmap, def_true, glob)
+        if use_noise:
+            hmap = get_noise_hmap(hmap)
 
     outsoil = model(hmap, glob)
+
+    if use_log:
+
+        def_true = torch.log(-torch.clamp(def_true,max=0.) + 1.e-8)
 
     loss_soil = criterion_s(outsoil, def_true)
 
@@ -47,103 +51,88 @@ def singlestep(model, data, train=True, use_noise=True):
    
 
 # Predict sequence (rollout) starting at timestep in_step with a length rollout_seq and compute loss
-def rollout(model, data, in_step=seq_len, rollout_seq=50):
-
-    part_types = data.part_types.to(device)
+def rollout(model, data, in_step=seq_len, rollout_seq=50, optimizer=None, scheduler=None, train=False):
 
     loss_rol = 0
-    loss_rol_rig = 0
 
     maxtimesteps = data.x.shape[2]
 
-    btch = data.batch.to(device)
 
     if in_step+rollout_seq>maxtimesteps-1:
         print("max step too large",in_step+rollout_seq-1)
 
-    # Initialize the prediction tensor
-
-
     # SCM
     gnn_out = data.x.clone()    # Afterwards, this is updated!
-
-
-    condrig = (part_types==1)
-    #batchrig = btch[condrig]
 
     # For each time "step" and previous ones, predict step+1
     steps = range(in_step, in_step+rollout_seq)
 
+    batch = data.batch.to(device)
+    hmap_init = data.hmap_init.to(device)
+    batches = data.wheelpos.shape[0]
+
     for step in steps:
 
         glob = data.glob[:,:,step].to(device)
-
         x_step = gnn_out[:,:,step].to(device)
-
         wheelpos_step = data.wheelpos[:,:,step].to(device)
+        def_true = data.def_true[:,:,step].to(device)
+        
+        #print(x_step.shape, wheelpos_step[batch].shape, batches)
 
-        relpos = x_step - wheelpos_step
+        relpos = x_step - wheelpos_step[batch]
         windowcond = sampleparts_rectangle(relpos)
         x_step = x_step[windowcond]
-        def_true = def_true[windowcond[condsoil]]
-        hmap_init_w = hmap_init[windowcond[condsoil]]
-        #hmap_init_w = hmap_init
+        def_true = def_true[windowcond]
+        hmap_init_w = hmap_init[windowcond]
 
-        print("Elapsed window:",(time.time()-time_ini)*1.e3)
-        time_ini2 = time.time()
+        hmap, def_true, pcloud_window, condbox = get_hmap_batched(x_step, wheelpos_step[batch[windowcond]], hmap_init_w, def_true, batches)
 
-        in_hmap, def_hmap = get_hmap(x_step, wheelpos_step, hmap_init_w, def_true)
         outsoil = model(hmap, glob)
 
-        # Soil
-        outsoil = torch.zeros((dataseq[~condrig].shape[0],1), device=device)
-        outsoil[window[~condrig]] = outsoil_w
+        if use_log:
 
-        # DEBUGGG
-        #outsoil[window[~condrig]] = -0.01
+            def_true = torch.log(-torch.clamp(def_true,max=0.) + 1.e-8)
 
-        # SCM
-        """
-        pred_pos_soil = pred_position(outsoil, currsoil, prevsoil)
-        #loss_rol += criterion(pred_pos_soil, nextsoil)
+        loss_soil = criterion_s(outsoil, def_true)
+        loss_rol += loss_soil
 
-        if sample_loss:
+        #print(outsoil.shape, pcloud_window.shape)
 
-            com_curr = global_mean_pool(currrig, batchrig)
-            distparticles = torch.norm(currsoil - com_curr[data.batch[~condrig]],dim=1)
-            closeparticles = (distparticles - 2.*wheel_radius <= 0.)
+        if use_log:
+            outsoil = -torch.exp(outsoil)
 
-            soilloss = criterion(pred_pos_soil[closeparticles], nextsoil[closeparticles])#/nextsoil.shape[0]ç
+        # hmap2pcloud
+        pcloud_window[:,2] += outsoil.view(pcloud_window.shape[0])
 
-        else:
-            soilloss = criterion(pred_pos_soil, nextsoil)#/nextsoil.shape[0]
+        x_step[condbox] = pcloud_window
 
-        """
-        #def_true = nextsoil[:,2:3]-currsoil[:,2:3]
-        z_pred = currsoil[:,2:3] + outsoil
-        z_pred[~window[~condrig]] = nextsoil[~window[~condrig],2:3]
+        #print(gnn_out.is_cuda, windowcond.is_cuda, x_step.is_cuda)
+        gnn_out[windowcond.to("cpu"),:,step] = x_step.clone().detach().to("cpu")
 
-        #soilloss = criterion(outsoil, def_true)
-        soilloss = criterion_s(z_pred[window[~condrig]], nextsoil[window[~condrig],2:3])
-        #soilloss = torch.abs(outsoil - def_true).mean()
+        if train:
 
-        
+            if use_amp:
+                with torch.cuda.amp.autocast():
+                    loss = loss_soil
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss = loss_soil
+                loss.backward()#retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
+                optimizer.step()
 
-        #loss_rol += torch.log10(soilloss) + logloss_rig
-        loss_rol += soilloss
-        #loss_rol_rig += logloss_rig
+            if scheduler is not None:
+                scheduler.step()
 
-       
-
-
-        #gnn_out[window,2:3,step+1][~condrig] = z_pred[window[~condrig]]
-        gnn_out[~condrig,2:3,step+1] = z_pred.cpu().detach()
-        
-
-        
+            optimizer.zero_grad(set_to_none=True)  # Clear gradients.
 
 
-    return loss_rol/len(steps), loss_rol_rig/len(steps), gnn_out, force_out
+
+    return loss_rol/len(steps), gnn_out
 
 
 
@@ -193,6 +182,41 @@ def train(model, loader, optimizer, scheduler, train_step, writer, lastmodelname
 
 
 
+# Training routine
+def train_rollout(model, loader, optimizer, scheduler, train_step, writer, lastmodelname):
+    model.train()
+
+    total_loss = 0
+    pbar = tqdm(loader, total=len(loader), position=0, leave=True, desc=f"Training")
+    for data in pbar:
+
+        optimizer.zero_grad(set_to_none=True)
+
+        #data = data.to(device)
+
+        # Train with single steps
+
+        
+        loss, _ = rollout(model, data, in_step=seq_len, rollout_seq=data.x.shape[2]-seq_len-1, optimizer=optimizer, scheduler=scheduler, train=True)
+
+        
+        #if scheduler is not None:
+        #    scheduler.step()
+
+        loss = loss.item()
+        total_loss += loss
+        if train_step % log_steps == 0:
+            writer.add_scalar("Training loss per gradient step", loss, train_step)
+
+        #optimizer.zero_grad(set_to_none=True)  # Clear gradients.
+        train_step+=1
+
+        if (train_step+1)%steps_save_model==0:
+            torch.save(model.state_dict(), lastmodelname)
+
+    return total_loss / len(loader), train_step
+
+
 # Evaluation routine
 @torch.no_grad()
 def test(model, loader, maxsteps, writer, vis=False):
@@ -204,7 +228,7 @@ def test(model, loader, maxsteps, writer, vis=False):
         #data = data.to(device)
         loss = 0
 
-        loss_rol, loss_rig, gnn_out, force_out = rollout(model, data, in_step=seq_len, rollout_seq=maxsteps-seq_len-1)
+        loss_rol, gnn_out = rollout(model, data, in_step=seq_len, rollout_seq=maxsteps-seq_len-1)
         #print(gnn_out[:3,:,-3:])
         #print(force_out[:,:,-3:])
         total_loss += loss_rol.item()#/data.x.shape[0]
@@ -216,7 +240,7 @@ def test(model, loader, maxsteps, writer, vis=False):
     #    compare_truth_pred(data, gnn_out, -1, writer, boundarylist)
         #compare_truth_pred(data, gnn_out, 60, writer, boundarylist)
 
-    return total_loss / len(loader), tot_loss_rig / len(loader)
+    return total_loss / len(loader)
 
 @torch.no_grad()
 def test_singlesteps(model, loader):

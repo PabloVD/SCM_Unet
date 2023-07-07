@@ -1,35 +1,34 @@
 
 
-
-
-#--------------------
-"""
-WARNING!
-
-CHECK CLAMP VALUES FOR DEFORMATION, IT DEPENDS ON STEP SIZE!
-
-"""
-#-------------------
-
 from Source.training import *
-#from Source.network_torchscript import GNN
-#from Source.network import *
-#from Source.network_globnormglobframe import *
 from Source.wrapper import *
-
+#from Source.notoptimized_wrapper import *
+from torch_geometric.loader import DataLoader
 from torch.profiler import profile, record_function, ProfilerActivity
+import matplotlib.pyplot as plt
 
 
-def sampleinputdata(indbatch):
+def get_pcloud_fixed(pcloud, wheelpos):
 
-        condbatch = (batchsoil==indbatch)
+    xy_wheel = torch.round(wheelpos[:2]/deltamap)
+    pcloud_grid = torch.round(pcloud[:,:2]/deltamap) - xy_wheel
 
-        pos_soil_b = pos_soil[condbatch,:3]
-        soil_vec = torch.cat([pos_soil_b,torch.zeros(pos_soil_b.shape[0],1)],dim=1) 
+    condbox_x = torch.logical_and( pcloud_grid[:,0]>-sizegrid//2-1, pcloud_grid[:,0]<sizegrid//2 )
+    condbox_y = torch.logical_and( pcloud_grid[:,1]>-sizegrid//2-1, pcloud_grid[:,1]<sizegrid//2 )
+    condbox = torch.logical_and( condbox_x, condbox_y )
+    
+    return pcloud[condbox]
 
-        wheeldata = [soil_vec, wheelpos[indbatch], orientquat[indbatch], glob[indbatch,:3], glob[indbatch,3:6]]
+def sampleinputdata(indbatch, pos_soil_b, wheelpos, orientquat, glob):
 
-        return wheeldata
+    soil_vec = torch.cat([pos_soil_b,torch.zeros(pos_soil_b.shape[0],1)],dim=1) 
+
+    soil_vec = get_pcloud_fixed(soil_vec, wheelpos[indbatch])
+    soil_vec = soil_vec[:sizegrid**2]
+
+    wheeldata = [soil_vec, wheelpos[indbatch], orientquat[indbatch], glob[indbatch,:3], glob[indbatch,3:6]]
+
+    return wheeldata
 
 def wheeldir_t(quat):
 
@@ -60,15 +59,25 @@ model = Unet(input_channels = input_channels,
              global_emb_dim = global_emb_dim)
 
 deltastep = 1
-n_sims = 1
-dataname = "DefSims"
+n_sims = None
+dataname = "DefSimsNoDamp"
 
 namerun = "unet_"
 namerun += dataname
-namerun += "_test3"
+namerun += "_test14"
 namerun += "_deltastep_"+str(deltastep)
 namerun += "_nsims_"+str(n_sims)
-
+if use_log:
+    namerun += "_log"
+else:
+    namerun += "_lin"
+namerun += "_lrfact_{:.1e}".format(lr_fact)
+namerun += "_gridsize_{:d}".format(sizegrid)
+if use_rollout:
+    namerun += "_rollout_"+str(rol_len)
+else:
+    namerun += "_singlestep"
+namerun += "_margin_{:.1e}".format(margin)
 
 namerun += "_lays_{:d}_std_{:.1e}_chan_{:d}_batch_{:d}".format(n_layers, noise_std, hidden_channels, batch_size)
 namerun += "_inputs_{:d}_globdim_{:d}".format(input_channels, global_emb_dim)
@@ -79,7 +88,6 @@ if use_wheeltype:
 sufix = "_"+namerun+"_lrs_{:.1e}_{:.1e}".format(lr_min, lr_max)
 
 bestmodelname = path+"models/bestmodel"+sufix
-#bestmodelname = path+"models/bestrigmodel"+sufix
 #bestmodelname = path+"models/lastmodel"+sufix
 state_dict = torch.load(bestmodelname, map_location=device)
 model.load_state_dict(state_dict)
@@ -98,9 +106,10 @@ script_wrapper = torch.jit.script(wrapmodel)
 sufixx = "_"+str(device)
 namewrapper = "wrapped_unet"+sufixx+".pt"
 script_wrapper.save(namewrapper)
-chronobuildpath = "/home/tda/CARLA/chrono_scm_newcode/build_def/data/vehicle/terrain/scm/"
-#script_wrapper.save(chronobuildpath+namewrapper)
+chronobuildpath = "/home/tda/CARLA/chrono_scm_newcode/build_cuda/data/vehicle/terrain/scm/"
+script_wrapper.save(chronobuildpath+namewrapper)
 
+loaded_wrapper = torch.jit.load(namewrapper)
 
 # Save in Unreal folder
 #script_wrapper.save("/home/tda/CARLA/LastUnrealCARLA/"+"wrapped_gnn"+sufixx+".pt")
@@ -109,45 +118,46 @@ chronobuildpath = "/home/tda/CARLA/chrono_scm_newcode/build_def/data/vehicle/ter
 # Prepare data
 #----------------
 
-n_sims = 1
-
-maxtimesteps = 500
+n_sims = 3
+maxtimesteps = 2500
 
 #pathchrono = "/home/tda/Descargas/SCM_simulations/OverfitSim"
-pathchrono = "/home/tda/Descargas/SCM_simulations/FlatSettling/Valid"
+#pathchrono = "/home/tda/Descargas/SCM_simulations/FlatSettling/Valid"
 
-train_dataset = load_chrono_dataset(pathsims=pathchrono, numsims=n_sims, maxtimesteps = maxtimesteps)
+simspath = "/home/tda/Descargas/SCM_simulations/"
+dataname = "DefSimsNoDamp"
+pathvalid = simspath + dataname + "/5sims"
+
+train_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps)
 
 print("Sample graph:",train_dataset[0])
 
 
-numwheels = 4
+numwheels = 12
 
 # Create data loaders
 
-train_loader = DataLoader(train_dataset, batch_size=numwheels, shuffle=False, num_workers=12)
+train_loader = DataLoader(train_dataset, batch_size=numwheels, shuffle=False, num_workers=12, drop_last=True)
 
 
 #step = -20
-data = next(iter(train_loader))
+#data = next(iter(train_loader))
 #data.to(device)
+
+#----------------
+# Test wrapper in data
+#----------------
+
 
 time_tot = []
 
+print("Len loader:", len(train_loader))
 
 
-for step in range(maxtimesteps):
 
-    with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
-
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-
-        #----------------
-        # Test wrapper in data
-        #----------------
-
+for data in train_loader:
+    pbar = tqdm(range(maxtimesteps), total=maxtimesteps, position=0, leave=True, desc=f"Running...")
+    for step in pbar:
 
         pos = data.x[:,:,step]
         part_types = data.part_types
@@ -160,84 +170,34 @@ for step in range(maxtimesteps):
         batchsoil =  batch[~condrig]
         batchrig = batch[condrig]
 
-        #hmap_nodes = torch.zeros((13041, 3))
-        #hmap_nodes = torch.load("sink_hmap_nodes")
-
-        #wheelpos = scatter(tirenodes, batchrig, dim=0, reduce="mean")
         wheelpos = data.wheelpos[:,:,step]
         #orientquat = torch.tensor([[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0]],dtype=torch.float32)
         orientquat = data.quatorientation[:,:,step]
 
-        # wheelframe = torch.zeros((numwheels,2))
-        # for i in range(numwheels):
-        #     wheelframe[i] = wheeldir_t(orientquat[i])
+        wheelframe = torch.zeros((numwheels,2))
+            
 
-        #print(wheelpos.shape, pos.shape)
-
-
-        #glob += 0.01*torch.randn(glob.shape)
-        #glob[:,3] -= 1.
-        #print("Vels",glob.mean(0))
-        #print(data.force[:,:,step])
-
-        
-
-        #print(pos.shape, glob.shape, wheeltype.shape, wheelpos.shape)
-
+        ws = []
 
         #"""
-        w_0 = sampleinputdata(0)
-        w_1 = sampleinputdata(1)
-        w_2 = sampleinputdata(2)
-        w_3 = sampleinputdata(3)
+        for i in range(numwheels):
+            wheelframe[i] = wheeldir_t(orientquat[i])
+            ws.append(sampleinputdata(i, pos_soil, wheelpos, orientquat, glob))
+        
+        #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
 
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()  
 
-        #vehicle_info = torch.zeros(3,dtype=torch.float32)#
-
-        loaded_wrapper = torch.jit.load(namewrapper)
-        #loaded_wrapper = wrapmodel
-        #loaded_wrapper.clampder = True
-        #print("Clamp diff force:",loaded_wrapper.clampder)
-
-        """
-        hmap = loaded_wrapper.get_hmap(hmap_nodes)
-        hmap = hmap.view(1,1,hmap.shape[0],hmap.shape[1])
-        print("hmap",hmap_nodes.shape, hmap.shape)
-        hmap = hmap.repeat(4,1,1,1)
-        print("hmap",hmap_nodes.shape, hmap.shape)
-        exit()
-        """
-
-        #prevstepsforce = data.force[:,:,step-prev_steps:step]
-        #loaded_wrapper.prevstepsforce = prevstepsforce.clone()
-        #print(torch.norm(loaded_wrapper.prevstepsforce[:,:3,-1],dim=1))
-        #print("Ground truth Fz",torch.norm(data.force[:,:3,step],dim=1))
-        #print("\nGround truth Fz",data.force[:,2,step])
-
-        #print("\nLoaded wrapper")
-        #print("Using overlap condition:", loaded_wrapper.overcondition)
-
-        # For correctly clamping force
-        """
-        prevprev_force = data.force[:,:,step-2]
-        prev_force = data.force[:,:,step-1]
-        loaded_wrapper.prevprev_force = prevprev_force.clone()
-        loaded_wrapper.prev_force = prev_force.clone()
-        """
-        #print("Prev force",loaded_wrapper.prev_force)
-
-
-        out = loaded_wrapper(w_0, w_1, w_2, w_3, verbose=True)
-
+        #out = loaded_wrapper(w_0, w_1, w_2, w_3, verbose=True)
+        out = loaded_wrapper(*ws, verbose=True)
 
         end.record()
         torch.cuda.synchronize()
         time_infer = start.elapsed_time(end)
+        time_tot.append(time_infer)
 
-        time_tot.append( time_infer )
-
-
-prof.export_chrome_trace("trace.json")
 
 burnphase = 50
 time_tot = np.array(time_tot)
@@ -248,6 +208,7 @@ plt.figure(figsize=(12,10))
 plt.hist(time_tot, bins=bins )
 #plt.plot(time_tot, linestyle=":", color="r" )
 plt.title("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
+print("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
 #plt.yscale("log")
 plt.xlabel("time [ms]")
-plt.savefig("time.png")
+plt.savefig("time_numwheels_"+str(numwheels)+".png")

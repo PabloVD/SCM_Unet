@@ -1,48 +1,52 @@
 from Source.training import *
 from Source.unet import Unet
+from torch_geometric.loader import DataLoader
+from torch.utils.tensorboard import SummaryWriter
+
 
 n_sims = None
 #n_sims = 1
 
-if dataname == "DefSims":
+if dataname == "DefSims" or dataname == "DefSimsNoDamp":
     maxtimesteps = 2500
 else:
     maxtimesteps = 500
 
 
-#print("DEBUUUUG")
-#maxtimesteps = 50
+
 
 firsttimestepvalid = 0
 deltastep = 1
 
 print("Memory being used (GB):",process.memory_info().rss/1.e9)
-"""
-train_dataset = load_chrono_dataset(pathsims=pathchrono, numsims=n_sims, maxtimesteps = 2000)
-#valid_dataset = train_dataset[:int(0.1*len(train_dataset))]
-#train_dataset = train_dataset[int(0.1*len(train_dataset)):]
-valid_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, firsttimestep = 0, maxtimesteps = 2000)
-"""
-train_dataset = load_chrono_dataset(pathsims=pathchrono, numsims=n_sims, maxtimesteps = maxtimesteps, split_steps=True)
-#train_dataset += load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps, split_steps=True)
-valid_dataset = train_dataset[:int(0.1*len(train_dataset))]
-train_dataset = train_dataset[int(0.1*len(train_dataset)):]
-#exit()
+
+
+
+if use_rollout:
+    train_dataset = load_chrono_dataset(pathsims=pathchrono, numsims=n_sims, maxtimesteps = maxtimesteps, use_rollout=True)
+    if os.path.exists(pathchronoadd):
+        train_dataset += load_chrono_dataset(pathsims=pathchronoadd, numsims=n_sims, maxtimesteps = maxtimesteps, use_rollout=True)
+    valid_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps, use_rollout=True)
+    #train_dataset = create_rollout_dataset(train_dataset, rol_len=rol_len)
+    #valid_dataset = create_rollout_dataset(valid_dataset, rol_len=rol_len)
+    mxstps = valid_dataset[0].x.shape[2]
+
+else:
+    train_dataset = load_chrono_dataset(pathsims=pathchrono, numsims=n_sims, maxtimesteps = maxtimesteps, split_steps=True)
+    if os.path.exists(pathchronoadd):
+        train_dataset += load_chrono_dataset(pathsims=pathchronoadd, numsims=n_sims, maxtimesteps = maxtimesteps, split_steps=True)
+    valid_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps, split_steps=True)
+    # random.shuffle(train_dataset)
+    # valid_dataset = train_dataset[:int(0.1*len(train_dataset))]
+    # train_dataset = train_dataset[int(0.1*len(train_dataset)):]
+
+print(valid_dataset[0])
+
+print(len(train_dataset), len(valid_dataset))
+
 print("Data shape:",train_dataset[-1])
 
 print("Memory being used (GB):",process.memory_info().rss/1.e9)
-
-#pathchrono2 = "/export/work/pvillanueva/SCM_Simulations/SlopeSims"
-#train_dataset += load_chrono_dataset(pathsims=pathchrono2, numsims=n_sims, maxtimesteps = 250)
-
-#pathchrono2 = "/export/work/pvillanueva/SCM_Simulations/MaxHeight3/Train"
-#train_dataset += load_chrono_dataset(pathsims=pathchrono2, numsims=n_sims, maxtimesteps = 250)
-#pathchrono2 = "/export/work/pvillanueva/SCM_Simulations/MaxHeight3/Valid"
-#train_dataset += load_chrono_dataset(pathsims=pathchrono2, numsims=n_sims, maxtimesteps = 250)
-
-#exit()
-
-#valid_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, firsttimestep = firsttimestepvalid, maxtimesteps = maxtimesteps-firsttimestepvalid)
 
 if deltastep > 1:
     train_dataset = sample_delta_dataset(train_dataset, deltastep)
@@ -59,7 +63,6 @@ print("\nSample graph:",train_dataset[0])
 print("Memory being used (GB):",process.memory_info().rss/1.e9)
 
 
-#mxstps = valid_dataset[0].x.shape[2]
 
 # Create data loaders
 
@@ -76,23 +79,6 @@ model = Unet(input_channels = input_channels,
 
 model = model.to(device)
 
-#exit()
-
-"""
-def init_weights(m):
-    if isinstance(m, torch.nn.Linear):
-        #print(m)
-        torch.nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
-        #torch.nn.init.kaiming_uniform_(m.weight, mode='fan_in', nonlinearity='relu')
-        #torch.nn.init.xavier_uniform(m.weight)
-        #m.bias.data.fill_(0.01)
-
-model.apply(init_weights)
-#"""
-
-from torch.utils.tensorboard import SummaryWriter
-import time, datetime
-#print(torch.cuda.memory_allocated(device), torch.cuda.memory_reserved(device))
 time_ini = time.time()
 
 #model = GNN()
@@ -106,11 +92,7 @@ model.to(device)
 #optimizer = torch.optim.Adam(model.parameters(), lr=lr_max, weight_decay=weight_decay)
 optimizer = torch.optim.AdamW(model.parameters(), lr=lr_max, weight_decay=weight_decay)
 
-#optimizer = torch.optim.Adam(model.parameters(), lr=1.e-4, weight_decay=weight_decay)
-#scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
-#scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=lr_min, max_lr=lr_max, cycle_momentum=False)
-#scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=learning_rate, total_steps=len(train_loader)*1000)
-#scheduler = None
+
 
 if sched_type == "CyclicLR":
     scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr=lr_min, max_lr=lr_max, cycle_momentum=False)
@@ -120,18 +102,22 @@ elif sched_type =="cos":
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max = patience, eta_min=lr_min)
 
 
-# Load best model if exists
-#namerun = "datasets2and3_halfwheel_sum_sinknorm_vel_aggr3_wheeltype_"+str(use_wheeltype)+"_r_{:.1e}_lays_{:d}_std_{:.1e}_chan_{:d}_equi_{:d}_batch_{:d}".format(linkradius, n_layers, noise_std, hidden_channels, use_equi, batch_size)
-#print("\nhalfwheel_sum_sinknorm_vel_aggr3_div_wheeltype_"+str(use_wheeltype)+"_l2l1cos")
-#print("Standard stuff:", "dec4_allvel_minmaxnorm_sinknoise","no sinkage")
-
-
 namerun = "unet_"
 namerun += dataname
-namerun += "_test6"
+namerun += "_test13"
 namerun += "_deltastep_"+str(deltastep)
 namerun += "_nsims_"+str(n_sims)
-
+if use_log:
+    namerun += "_log"
+else:
+    namerun += "_lin"
+namerun += "_lrfact_{:.1e}".format(lr_fact)
+namerun += "_gridsize_{:d}".format(sizegrid)
+if use_rollout:
+    namerun += "_rollout_"+str(rol_len)
+else:
+    namerun += "_singlestep"
+namerun += "_margin_{:.1e}".format(margin)
 
 namerun += "_lays_{:d}_std_{:.1e}_chan_{:d}_batch_{:d}".format(n_layers, noise_std, hidden_channels, batch_size)
 namerun += "_inputs_{:d}_globdim_{:d}".format(input_channels, global_emb_dim)
@@ -142,26 +128,16 @@ if use_wheeltype:
 
 sufix = "_"+namerun+"_lrs_{:.1e}_{:.1e}".format(lr_min, lr_max)
 bestmodelname = path+"models/bestmodel"+sufix
-bestrigmodelname = path+"models/bestrigmodel"+sufix
 lastmodelname = path+"models/lastmodel"+sufix
 print("Model:", namerun+"_lrs_{:.1e}_{:.1e}".format(lr_min, lr_max))
-if os.path.exists(bestmodelname):
+if os.path.exists(lastmodelname):
     print("Loading previous model")
-    print(bestmodelname)
-    state_dict = torch.load(bestmodelname, map_location=device)
+    print(lastmodelname)
+    state_dict = torch.load(lastmodelname, map_location=device)
     model.load_state_dict(state_dict)
 else:
     print("No previous model to be loaded")
 
-"""
-twodatasufix = "_withslopedataset2"
-namerun+=twodatasufix
-sufix = "_"+namerun+"_lrs_{:.1e}_{:.1e}".format(lr_min, lr_max)
-bestmodelname = path+"models/bestmodel"+sufix
-bestrigmodelname = path+"models/bestrigmodel"+sufix
-lastmodelname = path+"models/lastmodel"+sufix
-print(namerun)
-"""
 
 tim = time.localtime()
 strdate = "{:02d}-{:02d}_{:02d}:{:02d}".format(tim.tm_mday, tim.tm_mon, tim.tm_hour, tim.tm_min)
@@ -187,7 +163,11 @@ try:
     for epoch in range(1, num_epochs+1):
 
         print(f"Epoch: {epoch:02d}. Training")
-        train_loss, train_step = train(model, train_loader, optimizer, scheduler, train_step, writer, lastmodelname)
+        if use_rollout:
+            train_loss, train_step = train_rollout(model, train_loader, optimizer, scheduler, train_step, writer, lastmodelname)
+        else:
+            train_loss, train_step = train(model, train_loader, optimizer, scheduler, train_step, writer, lastmodelname)
+        
         train_losses.append(train_loss)
         writer.add_scalar("Training loss per epoch", train_loss, epoch)
         print(f'Epoch: {epoch:02d}, Training Loss: {train_loss:.2e}')
@@ -198,14 +178,22 @@ try:
             print(f"Epoch: {epoch:02d}. Validation")
             #print("Validation")
             #mxstps = min(110, maxtimesteps)
+
+            if use_rollout:
+
+                valid_loss = test(model, valid_loader, mxstps, writer)
+                writer.add_scalar("Validation loss (rollout)", valid_loss, epoch)
+
+            else:
             
-            valid_loss = test_singlesteps(model, valid_loader)
+                valid_loss = test_singlesteps(model, valid_loader)
+                writer.add_scalar("Validation loss (single step)", valid_loss, epoch)
             
             #valid_loss, rig_loss = test(model, valid_loader, mxstps, writer)
 
 
             valid_losses.append(valid_loss)
-            writer.add_scalar("Validation loss (single step)", valid_loss, epoch)
+            
             #writer.add_scalar("Rigid valid loss", rig_loss, epoch)
             print(f'Validation Loss: {valid_loss:.2e}')
             #print(f'Validation Rigid Loss: {rig_loss:.2e}')

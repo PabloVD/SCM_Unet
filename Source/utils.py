@@ -1,8 +1,10 @@
 from Source.init import *
-import pandas as pd
 import psutil
 import time, datetime
 import torchvision.transforms as tf
+from torch_geometric.data import Data
+import warnings
+warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
 
 process = psutil.Process()
 
@@ -35,8 +37,6 @@ def load_sim(datasetname, firsttimestep, maxtimesteps):
     soil = np.load(soilfile)
     soil = torch.tensor(soil,dtype=torch.float32)
     soil = soil[:,:,firsttimestep:firsttimestep+maxtimesteps]
-    
-    
 
     fourwheels = []
 
@@ -98,8 +98,10 @@ def load_sim(datasetname, firsttimestep, maxtimesteps):
         wheelorient2d = wheeldir(orientation)
         wheelframe = wheelorient2d.view(1,-1,maxtimesteps)
 
+        def_true = pos[:,2:3,1:].clone() - pos[:,2:3,:-1].clone()
+
         #graph = Data(x=pos, part_types=part_types, glob=globfeat, wheeltype=wheeltype, force=force, soiltype=soiltype, wheelframe=wheelframe)
-        graph = Data(x=pos, part_types=part_types, glob=globfeat, wheeltype=wheeltype, force=force, soiltype=soiltype, wheelframe=wheelframe, quatorientation=orientation.view(1,-1,maxtimesteps), wheelpos=wheel_pos.view(1,3,maxtimesteps))
+        graph = Data(x=pos, part_types=part_types, glob=globfeat, wheeltype=wheeltype, force=force, soiltype=soiltype, wheelframe=wheelframe, quatorientation=orientation.view(1,-1,maxtimesteps), wheelpos=wheel_pos.view(1,3,maxtimesteps), def_true=def_true)
         # use_hmap
         #graph.hmap = hmap
         #graph.numsoilparts = torch.tensor(hmap.shape[0],dtype=torch.int).view(1,1)
@@ -133,7 +135,9 @@ def load_sim(datasetname, firsttimestep, maxtimesteps):
     return fourwheels
 
 
-def load_chrono_dataset(pathsims=pathchrono, numsims=None, firsttimestep = 0, maxtimesteps = 128, data_aug=data_aug, split_steps=False):
+def load_chrono_dataset(pathsims=pathchrono, numsims=None, firsttimestep = 0, maxtimesteps = 128, data_aug=data_aug, split_steps=False, use_rollout=False):
+
+    assert not ((use_rollout==True) and (split_steps==True))
 
     print("Loading simulations from:",pathsims)
 
@@ -155,6 +159,8 @@ def load_chrono_dataset(pathsims=pathchrono, numsims=None, firsttimestep = 0, ma
             fourwheels = create_training_dataset(fourwheels)
             #del fourwheels
             #fourwheels = fourwheels_pre
+        if use_rollout:
+            fourwheels = create_rollout_dataset(fourwheels, rol_len=rol_len)
 
         # num_part_mean = 0 
         # tot_size = 0
@@ -171,6 +177,53 @@ def load_chrono_dataset(pathsims=pathchrono, numsims=None, firsttimestep = 0, ma
     print("Total num bursts", len(dataset))
 
     return dataset
+
+def create_rollout_dataset(dataset, rol_len=10):
+
+    stepdataset = []
+
+    mxtps = dataset[0].x.shape[2]
+    delta_steps = mxtps//rol_len
+
+    for data in dataset:
+
+        hmap_init = data.x[:,2:3,0]
+
+        for idelta in range(delta_steps-1):
+
+            stps = range(idelta*rol_len,(idelta+1)*rol_len)
+
+            x_step = data.x[:,:,stps]
+            glob_step = data.glob[:,:,stps]
+            wheelframe_step = data.wheelframe[:, :, stps]
+            quatorientation_step = data.quatorientation[:, :, stps]
+            force_step = data.force[:,:,stps]
+            wheelpos = data.wheelpos[:,:,stps]
+            def_true = data.def_true[:,:,stps]
+
+            minwheelx, maxwheelx = torch.min(wheelpos[0,0]), torch.max(wheelpos[0,0])
+            minwheely, maxwheely = torch.min(wheelpos[0,1]), torch.max(wheelpos[0,1])
+        
+            condx = torch.logical_and(x_step[:,0,0]>minwheelx-sampledist, x_step[:,0,0]<maxwheelx+sampledist)
+            condy = torch.logical_and(x_step[:,1,0]>minwheely-sampledist, x_step[:,1,0]<maxwheely+sampledist)
+            condtot = torch.logical_and(condx, condy)
+
+            x_step = x_step[condtot]
+            hmap_init_w = hmap_init[condtot]
+            def_true = def_true[condtot]
+
+            #def_true = data.x[condsoil,2:3,idelta:idelta+rol_len+1] - data.x[condsoil,2:3,idelta:idelta+rol_len]
+        
+            graph = Data(x=x_step, part_types=data.part_types, glob=glob_step, wheeltype=data.wheeltype, force=force_step, soiltype=data.soiltype, wheelframe=wheelframe_step, quatorientation=quatorientation_step, wheelpos=wheelpos, def_true=def_true)
+            graph.nameburst = data.nameburst
+            graph.hmap_init = hmap_init_w
+            graph.numnodes = x_step.shape[0]#.view(1,1)
+            
+            stepdataset.append(graph)
+
+    print("Total num bursts", len(stepdataset))
+
+    return stepdataset
 
 def create_training_dataset(dataset_in, filter=True):
 
@@ -190,16 +243,16 @@ def create_training_dataset(dataset_in, filter=True):
         for step in range(data.x.shape[2]-1):
 
             x_step = data.x[:,:,step].clone() 
-            z_ini = data.x[:,2:3,0].clone()
+            #z_ini = data.x[:,2:3,0].clone()
             glob_step = data.glob[:,:,step]
-            wheelframe_step = data.wheelframe[:, :, step]
+            #wheelframe_step = data.wheelframe[:, :, step]
             wheelpos_step = data.wheelpos[:, :, step]
-            quatorientation_step = data.quatorientation[:, :, step]
-            force_step = data.force[:,:,step]
+            #quatorientation_step = data.quatorientation[:, :, step]
+            #force_step = data.force[:,:,step]
 
             def_true = data.x[condsoil,2:3,step+1].clone() - data.x[condsoil,2:3,step].clone()
 
-            time_ini=time.time()
+            #time_ini=time.time()
 
             relpos = x_step - wheelpos_step
             windowcond = sampleparts_rectangle(relpos)
@@ -209,7 +262,7 @@ def create_training_dataset(dataset_in, filter=True):
             #hmap_init_w = hmap_init
 
             #print("Elapsed window:",(time.time()-time_ini)*1.e3)
-            time_ini2 = time.time()
+            #time_ini2 = time.time()
 
             in_hmap, def_hmap = get_hmap(x_step, wheelpos_step, hmap_init_w, def_true)
 
@@ -238,7 +291,8 @@ def create_training_dataset(dataset_in, filter=True):
 
             #     part_types_w = part_types
             #     z_ini_w = z_ini
-            
+            if normalize:
+                glob_step = glob_step/globnorm
 
             graph = Data(in_hmap=in_hmap, def_true=def_hmap, glob=glob_step, wheeltype=data.wheeltype, soiltype=data.soiltype)
             graph.nameburst = data.nameburst
@@ -249,7 +303,9 @@ def create_training_dataset(dataset_in, filter=True):
             #graph.numsoilparts = data.numsoilparts
             #graph.hmap = data.hmap[:,step:step+1,:,:]
 
-            stepdataset.append(graph)
+            if in_hmap is not None:
+
+                stepdataset.append(graph)
 
         del data, part_types
 
@@ -285,7 +341,7 @@ def sample_delta_dataset(dataset, deltastep = 1):
 
 
 
-def get_hmap(pcloud, wheelpos, hmap_init, def_true, sizegrid=sizegrid):
+def get_hmap_old(pcloud, wheelpos, hmap_init, def_true, sizegrid=sizegrid):
 
     n_channels = 3
     
@@ -297,8 +353,8 @@ def get_hmap(pcloud, wheelpos, hmap_init, def_true, sizegrid=sizegrid):
 
     pcloud_rel = pcloud - wheelpos
     rel_dist = torch.norm(pcloud_rel,dim=1)
-    rel_dist = torch.clamp(rel_dist, min=0., max= wheel_radius+deltamap)
-    pcloud_rel[:,2] = torch.clamp(-pcloud_rel[:,2], min=0., max= wheel_radius*1.1)
+    rel_dist = torch.clamp(rel_dist, min=0., max=wheel_radius+deltamap)
+    pcloud_rel[:,2] = torch.clamp(-pcloud_rel[:,2], min=0., max=wheel_radius*1.1)
     pcloud_grid = (pcloud_rel[:,:2]/deltamap).to(int)
     x_max, y_max = pcloud_grid[:,0].max(), pcloud_grid[:,1].max()
     
@@ -333,6 +389,95 @@ def get_hmap(pcloud, wheelpos, hmap_init, def_true, sizegrid=sizegrid):
     #print(hmap_mat.shape, def_mat.shape)
         
     return hmap_mat.view(1,n_channels,sizegrid,sizegrid), def_mat.view(1,1,sizegrid,sizegrid)
+
+def get_hmap(pcloud, wheelpos, hmap_init, def_true, sizegrid=sizegrid):
+
+    n_channels = 3
+    
+    # Write coordinates relative to the wheel
+
+    pcloud_rel = pcloud - wheelpos
+
+    rel_height = torch.clamp(-pcloud_rel[:,2], min=0., max=wheel_radius+margin)
+    rel_dist = torch.norm(pcloud_rel,dim=1)
+    rel_dist = torch.clamp(rel_dist, min=0., max=wheel_radius+margin)
+    sink = hmap_init.view(-1) - pcloud[:,2]
+
+    xy_wheel = torch.round(wheelpos[:,:2]/deltamap)
+    pcloud_grid = torch.round(pcloud[:,:2]/deltamap) - xy_wheel
+ 
+    condbox_x = torch.logical_and( pcloud_grid[:,0]>-sizegrid//2-1, pcloud_grid[:,0]<sizegrid//2 )
+    condbox_y = torch.logical_and( pcloud_grid[:,1]>-sizegrid//2-1, pcloud_grid[:,1]<sizegrid//2 )
+    condbox = torch.logical_and( condbox_x, condbox_y )
+    #print(pcloud_grid[condbox].shape)
+
+    if pcloud_grid[condbox].shape[0]!=sizegrid*sizegrid:
+        #print(pcloud_grid[condbox])
+        return None, None
+
+    rel_height = rel_height[condbox]
+    rel_dist = rel_dist[condbox]
+    sink = sink[condbox]
+    def_true = def_true[condbox]
+    #pcloud_window = pcloud[condbox] # only for validation
+
+    if normalize:
+        rel_height = rel_height/wheel_radius
+        rel_dist = rel_dist/wheel_radius
+        sink = sink/sinkmax
+
+    hmap_mat = torch.cat([rel_height.view(1,sizegrid, sizegrid), rel_dist.view(1,sizegrid, sizegrid), sink.view(1,sizegrid, sizegrid)],dim=0)
+    def_mat = def_true.view(1,sizegrid, sizegrid)
+
+        
+    return hmap_mat.view(1,n_channels,sizegrid,sizegrid), def_mat.view(1,1,sizegrid,sizegrid)#, pcloud_window
+
+
+def get_hmap_batched(pcloud, wheelpos, hmap_init, def_true, batches, sizegrid=sizegrid):
+
+    n_channels = 3
+    
+    # Write coordinates relative to the wheel
+
+    #print(pcloud.shape, wheelpos.shape)
+
+    pcloud_rel = pcloud - wheelpos
+
+    rel_height = torch.clamp(-pcloud_rel[:,2], min=0., max=wheel_radius*1.1)
+    rel_dist = torch.norm(pcloud_rel,dim=1)
+    rel_dist = torch.clamp(rel_dist, min=0., max=wheel_radius+deltamap)
+    sink = hmap_init.view(-1) - pcloud[:,2]
+
+    xy_wheel = torch.round(wheelpos[:,:2]/deltamap)
+    pcloud_grid = torch.round(pcloud[:,:2]/deltamap) - xy_wheel
+ 
+    condbox_x = torch.logical_and( pcloud_grid[:,0]>-sizegrid//2-1, pcloud_grid[:,0]<sizegrid//2 )
+    condbox_y = torch.logical_and( pcloud_grid[:,1]>-sizegrid//2-1, pcloud_grid[:,1]<sizegrid//2 )
+    condbox = torch.logical_and( condbox_x, condbox_y )
+    
+    #print(pcloud_grid[condbox].shape, wheelpos.shape)
+
+    if pcloud_grid[condbox].shape[0]!=sizegrid*sizegrid*batches:
+        print("Not valid hmaps", pcloud_grid[condbox].shape, batches)
+        return None, None, None
+
+    rel_height = rel_height[condbox].view(batches,1,sizegrid, sizegrid)
+    rel_dist = rel_dist[condbox].view(batches,1,sizegrid, sizegrid)
+    sink = sink[condbox].view(batches,1,sizegrid,sizegrid)
+    def_true = def_true[condbox].view(batches,1,sizegrid,sizegrid)
+    pcloud_window = pcloud[condbox] # only for validation
+
+    if normalize:
+        rel_height = rel_height/wheel_radius
+        rel_dist = rel_dist/wheel_radius
+        sink = sink/sinkmax
+
+    hmap_mat = torch.cat([rel_height, rel_dist, sink],dim=1)
+
+    #print(hmap_mat.shape, def_true.shape)
+        
+    return hmap_mat, def_true, pcloud_window, condbox
+
 
 
 def filter_deep_cases(dataset, margin=2.*linkradius):
@@ -679,9 +824,69 @@ def get_transform():
 
 transform_dataaug = get_transform()
 
-def dataaug(img, tar):
+def dataaug_old(img, tar):
     state = torch.get_rng_state()
     img = transform_dataaug(img)
     torch.set_rng_state(state)
     tar = transform_dataaug(tar)
     return img, tar
+
+angles = [0,90,180,270]
+flips = [0,1]
+rotmat_list = [ torch.tensor([[np.cos(angle),-np.sin(angle)],[np.sin(angle),np.cos(angle)]],dtype=torch.float32,device=device).view(1,2,2) for angle in angles]
+
+def data_augmentation(img, tar, glob):
+
+    # Rigid rotations
+    randind = torch.randint(0,len(angles),size=(1,)).item()
+    angle = angles[randind]
+    rotmat = rotmat_list[randind].repeat(glob.shape[0],1,1)
+    
+    img = tf.functional.rotate(img, angle)
+    tar = tf.functional.rotate(tar, angle)
+
+    glob[:,:2] = torch.bmm(rotmat,glob[:,:2].unsqueeze(-1)).squeeze(-1)
+    glob[:,3:5] = torch.bmm(rotmat,glob[:,3:5].unsqueeze(-1)).squeeze(-1)
+
+    # Reflections
+    hflip, vflip = torch.randint(0,len(flips),size=(1,)).item(), torch.randint(0,len(flips),size=(1,)).item()
+
+    # Flip in x axis
+    if hflip:
+        img = tf.functional.hflip(img)
+        tar = tf.functional.hflip(tar)
+        glob[:,0] = -glob[:,0]
+        glob[:,4] = -glob[:,4]  # Angular vel is pseudovector, modify y axis
+
+    # Flip in y axis
+    if vflip:
+        img = tf.functional.vflip(img)
+        tar = tf.functional.vflip(tar)
+        glob[:,1] = -glob[:,1]
+        glob[:,3] = -glob[:,3]  # Angular vel is pseudovector, modify x axis
+
+    return img, tar, glob
+
+# From hmap of shape (num_wheels, 1, sizegrid, sizegrid), returns a list of num_wheels point clouds, each with shape (sizegrid**2, 3), where the first two columns are the x,y global coordinates, and the third one is the vertical deformation
+def hmap2pcloud(xynodes, hmap):
+
+    #print(xynodes.shape, hmap.shape, wheelpos.shape, hmap.view(xynodes.shape[0],-1).shape)
+
+    xynodes[:,2] += hmap.view(xynodes.shape[0])
+
+    return xynodes.to("cpu")
+
+def get_noise_hmap(hmap):
+
+    shape = hmap.shape
+    noise = noise_std*torch.randn(shape, device=device)
+    # hmap += noise
+
+    # hmap[:,0] = torch.clamp(hmap[:,0], min=0., max=wheel_radius+margin)    
+    # hmap[:,1] = torch.clamp(hmap[:,1], min=0., max=wheel_radius+margin)
+
+    #noise[:,0] = torch.clamp(noise[:,0], min=0., max=wheel_radius+margin)    
+    #noise[:,1] = torch.clamp(noise[:,1], min=0., max=wheel_radius+margin)
+    hmap += noise
+
+    return hmap

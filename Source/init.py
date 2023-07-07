@@ -1,11 +1,6 @@
 import random
 import numpy as np
 import torch
-from torch_geometric.data import Data#, DataLoader
-from torch_geometric.loader import DataLoader
-from tqdm import tqdm
-#from visualiz import *
-from torch_geometric.nn import global_add_pool, global_mean_pool
 import os
 
 print(torch.__version__)
@@ -13,13 +8,15 @@ print(torch.__version__)
 path=""
 
 simspath = "/export/work/pvillanueva/SCM_Simulations/"
-simspath = "/home/tda/Descargas/SCM_simulations/"
+#simspath = "/home/tda/Descargas/SCM_simulations/"
 
 #dataname = "OverfitFlatSettling"
 #dataname = "FlatSettling"
-dataname = "DefSims"
+#dataname = "DefSims"
+dataname = "DefSimsNoDamp"
 
 pathchrono = simspath + dataname + "/Train"
+pathchronoadd = simspath + dataname + "/TrainAdd"
 pathvalid = simspath + dataname + "/Valid"
 
 # Random seeds
@@ -103,8 +100,9 @@ permu = [0,2,1]
 
 # Hyperparameters
 num_epochs = 5000
-lr_max = 1.e-3*0.1
-lr_min = 1.e-6*0.1
+lr_fact = 1.
+lr_max = 1.e-4*lr_fact
+lr_min = 1.e-7*lr_fact
 weight_decay = 1.e-8
 #weight_decay = 1.e-5
 
@@ -112,7 +110,8 @@ weight_decay = 1.e-8
 #batch_size = 20
 #batch_size = 40
 #batch_size = 60
-batch_size = 80
+batch_size = 128
+#batch_size = 80
 #batch_size = 100
 
 
@@ -138,9 +137,9 @@ print("Batch size:", batch_size)
 linkradius = 0.055
 #linkradius = 0.075
 # Number of hidden features in each MLP
-hidden_channels = 64
+hidden_channels = 32
 # Number of intermediate message passing layers
-n_layers = 4
+n_layers = 3
 
 print("Linking radius",linkradius)
 print("Hidden channels",hidden_channels)
@@ -252,7 +251,7 @@ use_hmap = True
 use_hmap = False
 print("Using cnn hmap:",use_hmap)
 
-# USE FLASE ALWAYS FOR NOW
+# USE FALSE ALWAYS FOR NOW
 use_wheelnodes = False
 print("Using wheel nodes:",use_wheelnodes)
 
@@ -263,8 +262,24 @@ else:
 print("Using use rel pos wheel:",use_relposwheel)
 
 # Fixed grid size for input height maps
-sizegrid = 16
+sizegrid = 12
 
 # For hmap
 deltamap = 0.05
-def_min, def_max = -1.2, 0.
+#def_min, def_max = -1.2, 0.
+
+use_log = True
+print("Using log",use_log)
+normalize = True
+print("Using normalization",normalize)
+
+sinkmax = 0.5
+linvelnorm = 10.
+angvelnorm = 245.
+globnorm = torch.tensor([linvelnorm,linvelnorm,linvelnorm,angvelnorm,angvelnorm,angvelnorm])
+
+use_rollout = False
+rol_len = 50
+print("Using rollouts",use_rollout, ", Rollout lenght:",rol_len)
+
+margin = 0.05

@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+torch.backends.cudnn.benchmark = True
 
 class Block(nn.Module):
     def __init__(self, in_ch, out_ch, global_emb_dim, up=False):
@@ -90,18 +90,21 @@ class Unet(nn.Module):
         # Embedd time
         t = self.global_mlp(glob)
         # Initial conv
-        #print(x.shape)
+        #print("First",x.shape)
         x = self.conv0(x)
         # Unet
         residual_inputs = []
         for down in self.downs:
             x = down(x, t)
+            #print(x.shape)
             residual_inputs.append(x)
         for up in self.ups:
             residual_x = residual_inputs.pop()
+            #print(residual_x.shape)
             # Add residual x as additional channels
             x = torch.cat((x, residual_x), dim=1)           
             x = up(x, t)
+            #print(x.shape)
         return self.output(x)
     
 
@@ -114,8 +117,9 @@ if __name__=="__main__":
 
     device = "cuda"
 
-    model = Unet(input_channels = 3, num_layers = 4, hidden_channels_in = 32, global_emb_dim = 6)
+    model = Unet(input_channels = 3, num_layers = 3, hidden_channels_in = 32, global_emb_dim = 6)
     model = model.to(device)
+    #model = model.half()
 
     time_tot = []
 
@@ -125,10 +129,11 @@ if __name__=="__main__":
         end = torch.cuda.Event(enable_timing=True)
         start.record()
 
-        x = torch.randn((4,3,16,16))
+        x = torch.randn((4,3,12,12))
         glob = torch.randn((4,6))
         x = x.to(device)
         glob = glob.to(device)    
+        #x, glob = x.half(), glob.half()
 
         out = model(x, glob)
         out = out.to("cpu")
