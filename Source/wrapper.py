@@ -88,10 +88,11 @@ class Wrapper(torch.nn.Module):
         self.sinkmax = torch.tensor(sinkmax,device=self.device)
         self.globnorm = torch.tensor([linvelnorm,linvelnorm,linvelnorm,angvelnorm,angvelnorm,angvelnorm],device=self.device)
 
-
+        self.soilpos = torch.zeros((self.batchsize*self.sizegrid**2, 4), device=self.device)
         self.hmap = torch.zeros((self.batchsize, self.n_channels, self.sizegrid, self.sizegrid), device=self.device)
         self.glob = torch.zeros((self.batchsize,6), device=self.device)
         self.wheelpos = torch.zeros((self.batchsize,3), device=self.device)
+        self.quat = torch.zeros((self.batchsize,4), device=self.device)
         self.worient2d = torch.zeros((self.batchsize,2), device=self.device)
 
         self.zax = torch.tensor([0,0,1], dtype=torch.float32, device=self.device).repeat(self.batchsize,1)
@@ -182,6 +183,28 @@ class Wrapper(torch.nn.Module):
     
     
     
+    # # From hmap of shape (num_wheels, 1, sizegrid, sizegrid), returns a list of num_wheels point clouds, each with shape (sizegrid**2, 3), where the first two columns are the x,y global coordinates, and the third one is the vertical deformation
+    # def hmap2pcloud_rot_prev(self, outsoil, wheelpos, worient2d):
+
+    #     outputs = []
+
+    #     self.xynodes[:,2] = outsoil.view(-1)#self.batchsize*self.sizegrid**2)
+
+    #     rot_pos = self.to_wheelframe(worient2d, self.relpos, self.batch)
+
+    #     window = self.sampleparts_rectangle(rot_pos)
+
+    #     outs = self.xynodes[window].to("cpu")
+
+    #     redbatch = self.batch[window].to("cpu")
+
+    #     for iw in range(self.batchsize):
+
+    #         outputs.append( outs[iw==redbatch] )
+
+    #     return outputs[0], outputs[1], outputs[2], outputs[3]
+    
+        
     # From hmap of shape (num_wheels, 1, sizegrid, sizegrid), returns a list of num_wheels point clouds, each with shape (sizegrid**2, 3), where the first two columns are the x,y global coordinates, and the third one is the vertical deformation
     def hmap2pcloud_rot(self, outsoil, wheelpos, worient2d):
 
@@ -206,31 +229,33 @@ class Wrapper(torch.nn.Module):
     
     
 
-    def forward(self, w_0: WheelData, w_1: WheelData, w_2: WheelData, w_3: WheelData, verbose: bool = True):
-        #def forward(self, w_0: WheelData, w_1: WheelData, w_2: WheelData, w_3: WheelData, w_4: WheelData, w_5: WheelData, verbose: bool = True):
-        #def forward(self, w_0: WheelData, w_1: WheelData, w_2: WheelData, w_3: WheelData, w_4: WheelData, w_5: WheelData, w_6: WheelData, w_7: WheelData, w_8: WheelData, w_9: WheelData, w_10: WheelData, w_11: WheelData, verbose: bool = True):
-
-            #with profiler.record_function("Pre"):
-
-        wheels_info = [w_0,w_1,w_2,w_3]
-        #wheels_info = [w_0,w_1,w_2,w_3,w_4,w_5]
-        #wheels_info = [w_0,w_1,w_2,w_3,w_4,w_5,w_6,w_7,w_8,w_9,w_10,w_11]
+    def forward(self, soilpos: Tensor, wheelpos: Tensor, quat: Tensor, glob: Tensor):
 
         # Preprocess data
 
         #with profiler.record_function("Pre glob"):
 
-        pos = torch.cat([w[0] for w in wheels_info],dim=0).to(self.device)
-        self.wheelpos = torch.cat([w[1].view(1,3) for w in wheels_info],dim=0).to(self.device)
-        quat = torch.cat([w[2].view(1,4) for w in wheels_info],dim=0).to(self.device)
-        self.worient2d = self.wheeldir(quat)
-        linvel = torch.cat([w[3].view(1,3) for w in wheels_info],dim=0)
-        angvel = torch.cat([w[4].view(1,3) for w in wheels_info],dim=0)
-        self.glob = torch.cat([linvel, angvel],dim=1).to(self.device)/self.globnorm
+        self.soilpos, self.wheelpos, self.quat, self.glob = soilpos.to(self.device), wheelpos.to(self.device), quat.to(self.device), glob.to(self.device)
+        self.worient2d = self.wheeldir(self.quat)
+        self.glob = self.glob/self.globnorm
+
+        # soilpos = torch.cat([w[0] for w in wheels_info],dim=0).to(self.device)
+        # self.wheelpos = torch.cat([w[1].view(1,3) for w in wheels_info],dim=0).to(self.device)
+        # quat = torch.cat([w[2].view(1,4) for w in wheels_info],dim=0).to(self.device)
+        # self.worient2d = self.wheeldir(quat)
+        # linvel = torch.cat([w[3].view(1,3) for w in wheels_info],dim=0)
+        # angvel = torch.cat([w[4].view(1,3) for w in wheels_info],dim=0)
+        # self.glob = torch.cat([linvel, angvel],dim=1).to(self.device)/self.globnorm
 
         #with profiler.record_function("Get hmap"):
 
-        self.hmap = self.get_batched_hmap_wrapper(pos, self.wheelpos)
+        self.hmap = self.get_batched_hmap_wrapper(self.soilpos, self.wheelpos)
+
+        # torch.save(self.hmap,"hmap_new.pt")
+
+        #print("hey")
+        #print(self.hmap[2,0,:10,:10])
+        #print(self.glob)
 
         if self.use_float16:
             self.hmap = self.hmap.to(torch.float16)
@@ -240,13 +265,20 @@ class Wrapper(torch.nn.Module):
 
         #with profiler.record_function("Forward"):
 
+        # torch.save(self.hmap,"hmap_new.pt")
+        # torch.save(self.glob,"glob_new.pt")
+
         outsoil = self.model(self.hmap, self.glob)
+
+        #print(outsoil[2,0,:8,:8])
+        #print(self.namemodel)
+        #torch.save(outsoil,"outsoil_new.pt")
 
         if self.use_log:
             outsoil = -torch.exp(outsoil)
 
         if self.use_float16:
-            self.glob = self.glob.to(torch.float32)
+            outsoil = outsoil.to(torch.float32)
 
         # Postprocess data
 

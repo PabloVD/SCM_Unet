@@ -8,9 +8,20 @@ from torch.profiler import profile, record_function, ProfilerActivity
 import matplotlib.pyplot as plt
 
 
+# def get_pcloud_fixed_old(pcloud, wheelpos):
+
+#     xy_wheel = torch.round(wheelpos[:2]/deltamap)
+#     pcloud_grid = torch.round(pcloud[:,:2]/deltamap) - xy_wheel
+
+#     condbox_x = torch.logical_and( pcloud_grid[:,0]>-sizegrid//2-1, pcloud_grid[:,0]<sizegrid//2 )
+#     condbox_y = torch.logical_and( pcloud_grid[:,1]>-sizegrid//2-1, pcloud_grid[:,1]<sizegrid//2 )
+#     condbox = torch.logical_and( condbox_x, condbox_y )
+    
+#     return pcloud[condbox]
+
 def get_pcloud_fixed(pcloud, wheelpos):
 
-    xy_wheel = torch.round(wheelpos[:2]/deltamap)
+    xy_wheel = torch.round(wheelpos[:,:2]/deltamap)
     pcloud_grid = torch.round(pcloud[:,:2]/deltamap) - xy_wheel
 
     condbox_x = torch.logical_and( pcloud_grid[:,0]>-sizegrid//2-1, pcloud_grid[:,0]<sizegrid//2 )
@@ -118,8 +129,8 @@ loaded_wrapper = torch.jit.load(namewrapper)
 # Prepare data
 #----------------
 
-n_sims = 3
-maxtimesteps = 2500
+n_sims = 1
+maxtimesteps = 250
 
 #pathchrono = "/home/tda/Descargas/SCM_simulations/OverfitSim"
 #pathchrono = "/home/tda/Descargas/SCM_simulations/FlatSettling/Valid"
@@ -133,7 +144,7 @@ train_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimes
 print("Sample graph:",train_dataset[0])
 
 
-numwheels = 12
+numwheels = 4
 
 # Create data loaders
 
@@ -174,15 +185,23 @@ for data in train_loader:
         #orientquat = torch.tensor([[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0]],dtype=torch.float32)
         orientquat = data.quatorientation[:,:,step]
 
-        wheelframe = torch.zeros((numwheels,2))
+        #wheelframe = torch.zeros((numwheels,2))
+
+        pos_soil = get_pcloud_fixed(pos_soil, wheelpos[batch])
+        pos_soil = torch.cat([pos_soil,torch.zeros(pos_soil.shape[0],1)],dim=1) 
+
+        #print(pos_soil.shape, wheelpos.shape, orientquat.shape, glob.shape)
+        #exit()
+
+        #print(pos_soil[:144])
             
 
-        ws = []
+        # ws = []
 
-        #"""
-        for i in range(numwheels):
-            wheelframe[i] = wheeldir_t(orientquat[i])
-            ws.append(sampleinputdata(i, pos_soil, wheelpos, orientquat, glob))
+        # #"""
+        # for i in range(numwheels):
+        #     wheelframe[i] = wheeldir_t(orientquat[i])
+        #     ws.append(sampleinputdata(i, pos_soil, wheelpos, orientquat, glob))
         
         #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
 
@@ -191,12 +210,22 @@ for data in train_loader:
         start.record()  
 
         #out = loaded_wrapper(w_0, w_1, w_2, w_3, verbose=True)
-        out = loaded_wrapper(*ws, verbose=True)
+        #out = loaded_wrapper(*ws, verbose=True)
+        out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
 
         end.record()
         torch.cuda.synchronize()
         time_infer = start.elapsed_time(end)
         time_tot.append(time_infer)
+
+# with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+
+#     out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
+
+# prof.export_chrome_trace("trace.json")
+
+#print(out[2])
+print(out[0].shape, out[1].shape, out[2].shape, out[3].shape)
 
 
 burnphase = 50
