@@ -6,7 +6,10 @@ from Source.wrapper import *
 from torch_geometric.loader import DataLoader
 from torch.profiler import profile, record_function, ProfilerActivity
 import matplotlib.pyplot as plt
+import math
 
+
+test_times = False
 
 # def get_pcloud_fixed_old(pcloud, wheelpos):
 
@@ -75,7 +78,7 @@ dataname = "DefSimsNoDamp"
 
 namerun = "unet_"
 namerun += dataname
-namerun += "_test14"
+namerun += "_test13"
 namerun += "_deltastep_"+str(deltastep)
 namerun += "_nsims_"+str(n_sims)
 if use_log:
@@ -115,129 +118,137 @@ wrapmodel = Wrapper(model, namerun)
 script_wrapper = torch.jit.script(wrapmodel)
 
 sufixx = "_"+str(device)
+sufixx += "_batch_"+str(wrapmodel.batchsize)
 namewrapper = "wrapped_unet"+sufixx+".pt"
 script_wrapper.save(namewrapper)
 chronobuildpath = "/home/tda/CARLA/chrono_scm_newcode/build_cuda/data/vehicle/terrain/scm/"
 script_wrapper.save(chronobuildpath+namewrapper)
 
-loaded_wrapper = torch.jit.load(namewrapper)
+print("Wrapper generated:", namewrapper)
 
-# Save in Unreal folder
-#script_wrapper.save("/home/tda/CARLA/LastUnrealCARLA/"+"wrapped_gnn"+sufixx+".pt")
+if test_times:
 
-#----------------
-# Prepare data
-#----------------
+    loaded_wrapper = torch.jit.load(namewrapper)
 
-n_sims = 1
-maxtimesteps = 250
+    # Save in Unreal folder
+    #script_wrapper.save("/home/tda/CARLA/LastUnrealCARLA/"+"wrapped_gnn"+sufixx+".pt")
 
-#pathchrono = "/home/tda/Descargas/SCM_simulations/OverfitSim"
-#pathchrono = "/home/tda/Descargas/SCM_simulations/FlatSettling/Valid"
+    #----------------
+    # Prepare data
+    #----------------
 
-simspath = "/home/tda/Descargas/SCM_simulations/"
-dataname = "DefSimsNoDamp"
-pathvalid = simspath + dataname + "/5sims"
+    n_sims = 1
+    maxtimesteps = 2500
 
-train_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps)
+    #pathchrono = "/home/tda/Descargas/SCM_simulations/OverfitSim"
+    #pathchrono = "/home/tda/Descargas/SCM_simulations/FlatSettling/Valid"
 
-print("Sample graph:",train_dataset[0])
+    simspath = "/home/tda/Descargas/SCM_simulations/"
+    dataname = "DefSimsNoDamp"
+    pathvalid = simspath + dataname + "/5sims"
 
+    train_dataset = load_chrono_dataset(pathsims=pathvalid, numsims=n_sims, maxtimesteps = maxtimesteps)
+    train_dataset = train_dataset*math.ceil(wrapmodel.batchsize)
+    train_dataset = train_dataset[:wrapmodel.batchsize]
 
-numwheels = 4
+    print("Sample graph:",train_dataset[0])
+    print("Num sims",len(train_dataset))
 
-# Create data loaders
+    numwheels = wrapmodel.batchsize
 
-train_loader = DataLoader(train_dataset, batch_size=numwheels, shuffle=False, num_workers=12, drop_last=True)
+    # Create data loaders
 
-
-#step = -20
-#data = next(iter(train_loader))
-#data.to(device)
-
-#----------------
-# Test wrapper in data
-#----------------
+    train_loader = DataLoader(train_dataset, batch_size=numwheels, shuffle=False, num_workers=12, drop_last=True)
 
 
-time_tot = []
+    #step = -20
+    #data = next(iter(train_loader))
+    #data.to(device)
 
-print("Len loader:", len(train_loader))
+    #----------------
+    # Test wrapper in data
+    #----------------
 
 
+    time_tot = []
 
-for data in train_loader:
-    pbar = tqdm(range(maxtimesteps), total=maxtimesteps, position=0, leave=True, desc=f"Running...")
-    for step in pbar:
+    print("Len loader:", len(train_loader))
 
-        pos = data.x[:,:,step]
-        part_types = data.part_types
-        condrig = (part_types==1)
-        pos_soil = pos[~condrig]
-        tirenodes = pos[condrig]
-        glob = data.glob[:,:,step]
-        wheeltype = data.wheeltype
-        batch = data.batch
-        batchsoil =  batch[~condrig]
-        batchrig = batch[condrig]
+    inframe = 0
 
-        wheelpos = data.wheelpos[:,:,step]
-        #orientquat = torch.tensor([[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0]],dtype=torch.float32)
-        orientquat = data.quatorientation[:,:,step]
+    for data in train_loader:
+        pbar = tqdm(range(inframe,maxtimesteps), total=maxtimesteps-inframe, position=0, leave=True, desc=f"Running...")
+        for step in pbar:
 
-        #wheelframe = torch.zeros((numwheels,2))
+            pos = data.x[:,:,step]
+            part_types = data.part_types
+            condrig = (part_types==1)
+            pos_soil = pos[~condrig]
+            tirenodes = pos[condrig]
+            glob = data.glob[:,:,step]
+            wheeltype = data.wheeltype
+            batch = data.batch
+            batchsoil =  batch[~condrig]
+            batchrig = batch[condrig]
 
-        pos_soil = get_pcloud_fixed(pos_soil, wheelpos[batch])
-        pos_soil = torch.cat([pos_soil,torch.zeros(pos_soil.shape[0],1)],dim=1) 
+            wheelpos = data.wheelpos[:,:,step]
+            #orientquat = torch.tensor([[1,0,0,0],[1,0,0,0],[1,0,0,0],[1,0,0,0]],dtype=torch.float32)
+            orientquat = data.quatorientation[:,:,step]
 
-        #print(pos_soil.shape, wheelpos.shape, orientquat.shape, glob.shape)
-        #exit()
+            #wheelframe = torch.zeros((numwheels,2))
 
-        #print(pos_soil[:144])
+            pos_soil = get_pcloud_fixed(pos_soil, wheelpos[batch])
+            pos_soil = torch.cat([pos_soil,torch.zeros(pos_soil.shape[0],1)],dim=1) 
+
+            #print(pos_soil.shape, wheelpos.shape, orientquat.shape, glob.shape)
+            #exit()
+
+            #print(pos_soil[:144])
+                
+
+            # ws = []
+
+            # #"""
+            # for i in range(numwheels):
+            #     wheelframe[i] = wheeldir_t(orientquat[i])
+            #     ws.append(sampleinputdata(i, pos_soil, wheelpos, orientquat, glob))
             
+            #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
 
-        # ws = []
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()  
 
-        # #"""
-        # for i in range(numwheels):
-        #     wheelframe[i] = wheeldir_t(orientquat[i])
-        #     ws.append(sampleinputdata(i, pos_soil, wheelpos, orientquat, glob))
-        
-        #with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+            #out = loaded_wrapper(w_0, w_1, w_2, w_3, verbose=True)
+            #out = loaded_wrapper(*ws, verbose=True)
+            out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
 
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()  
+            end.record()
+            torch.cuda.synchronize()
+            time_infer = start.elapsed_time(end)
+            time_tot.append(time_infer)
 
-        #out = loaded_wrapper(w_0, w_1, w_2, w_3, verbose=True)
-        #out = loaded_wrapper(*ws, verbose=True)
-        out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
+    # with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
 
-        end.record()
-        torch.cuda.synchronize()
-        time_infer = start.elapsed_time(end)
-        time_tot.append(time_infer)
+    #     out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
 
-# with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA]) as prof:
+    # prof.export_chrome_trace("trace.json")
 
-#     out = loaded_wrapper(pos_soil, wheelpos, orientquat, glob)
-
-# prof.export_chrome_trace("trace.json")
-
-#print(out[2])
-print(out[0].shape, out[1].shape, out[2].shape, out[3].shape)
+    #print(out[2])
+    print(out.shape)
+    print(out[:10])
 
 
-burnphase = 50
-time_tot = np.array(time_tot)
-time_tot = time_tot[burnphase:]
-bins = 100
+    burnphase = 50
+    time_tot = np.array(time_tot)
+    time_tot = time_tot[burnphase:]
+    bins = 100
 
-plt.figure(figsize=(12,10))
-plt.hist(time_tot, bins=bins )
-#plt.plot(time_tot, linestyle=":", color="r" )
-plt.title("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
-print("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
-#plt.yscale("log")
-plt.xlabel("time [ms]")
-plt.savefig("time_numwheels_"+str(numwheels)+".png")
+    plt.figure(figsize=(12,10))
+    plt.hist(time_tot, bins=bins )
+    #plt.plot(time_tot, linestyle=":", color="r" )
+    plt.title("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
+    print("Mean time: {:.1e} +- {:.1e} ms".format(time_tot.mean(), time_tot.std()))
+    #plt.yscale("log")
+    plt.xlabel("time [ms]")
+    plt.savefig("time_numwheels_"+str(numwheels)+".png")

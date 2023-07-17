@@ -98,10 +98,13 @@ class Unet(nn.Module):
             x = down(x, t)
             #print(x.shape)
             residual_inputs.append(x)
+            #print(x.shape)
         for up in self.ups:
             residual_x = residual_inputs.pop()
             #print(residual_x.shape)
             # Add residual x as additional channels
+            #print(x.shape, residual_x.shape)
+            #residual_x = residual_x[:,:,:x.shape[2],:x.shape[3]]
             x = torch.cat((x, residual_x), dim=1)           
             x = up(x, t)
             #print(x.shape)
@@ -129,7 +132,9 @@ if __name__=="__main__":
         end = torch.cuda.Event(enable_timing=True)
         start.record()
 
-        x = torch.randn((4,3,12,12))
+        #gridsize = 12
+        gridsize = 10*5
+        x = torch.randn((4,3,gridsize,gridsize))
         glob = torch.randn((4,6))
         x = x.to(device)
         glob = glob.to(device)    
@@ -142,6 +147,8 @@ if __name__=="__main__":
         torch.cuda.synchronize()
         time_infer = start.elapsed_time(end)
         time_tot.append( time_infer )
+
+        exit()
 
     burnphase = 100
     time_tot = np.array(time_tot)

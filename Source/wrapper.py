@@ -5,7 +5,7 @@ from typing import Tuple, List
 from torch import Tensor
 from typing import Optional, Tuple
 import torch.profiler as profiler
-import contextlib
+#import nvtx
 
 
 WheelData = Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]
@@ -52,7 +52,7 @@ class Wrapper(torch.nn.Module):
         self.namemodel = namemodel
         self.device = torch.device(device)
         self.batchsize = 4
-        self.use_float16 = False
+        self.use_float16 = True
 
         if self.use_float16:
             self.model = self.model.to(torch.float16)
@@ -72,6 +72,7 @@ class Wrapper(torch.nn.Module):
         print("Model employed:",self.namemodel)
         
         self.sizegrid = sizegrid
+        #self.sizegrid = 24
         self.deltamap = deltamap
 
         self.n_channels = self.model.input_channels
@@ -164,7 +165,9 @@ class Wrapper(torch.nn.Module):
         sink = pcloud[:,3]
         pos = pcloud[:,:3]
 
-        self.xynodes[:,:2] = pos[:,:2]
+        # lunes
+        #self.xynodes[:,:2] = pos[:,:2]
+        self.xynodes[:,:3] = pos[:,:3]
 
         self.relpos = pos - wheelpos[self.batch]
 
@@ -204,11 +207,11 @@ class Wrapper(torch.nn.Module):
 
     #     return outputs[0], outputs[1], outputs[2], outputs[3]
     
-        
+    """
     # From hmap of shape (num_wheels, 1, sizegrid, sizegrid), returns a list of num_wheels point clouds, each with shape (sizegrid**2, 3), where the first two columns are the x,y global coordinates, and the third one is the vertical deformation
     def hmap2pcloud_rot(self, outsoil, wheelpos, worient2d):
 
-        outputs = []
+        #outputs = []
 
         self.xynodes[:,2] = outsoil.view(-1)#self.batchsize*self.sizegrid**2)
 
@@ -216,20 +219,56 @@ class Wrapper(torch.nn.Module):
 
         window = self.sampleparts_rectangle(rot_pos)
 
-        outs = self.xynodes[window].to("cpu")
+        # outs = self.xynodes[window].to("cpu")
 
-        redbatch = self.batch[window].to("cpu")
+        # redbatch = self.batch[window].to("cpu")
 
-        for iw in range(self.batchsize):
+        # for iw in range(self.batchsize):
 
-            outputs.append( outs[iw==redbatch] )
+        #     outputs.append( outs[iw==redbatch] )
 
-        return outputs[0], outputs[1], outputs[2], outputs[3]
+        # return outputs[0], outputs[1], outputs[2], outputs[3]
+
+        out = torch.cat([self.xynodes, self.batch.view(-1,1)], dim=-1)
+
+        return out[window].to("cpu")
+    """
+
+
+    # From hmap of shape (num_wheels, 1, sizegrid, sizegrid), returns a list of num_wheels point clouds, each with shape (sizegrid**2, 3), where the first two columns are the x,y global coordinates, and the third one is the vertical deformation
+    def hmap2pcloud_rot(self, outsoil, wheelpos, worient2d):
+
+        #outputs = []
+
+        #self.xynodes[:,2] = outsoil.view(-1)#self.batchsize*self.sizegrid**2)
+        # lunes
+        self.xynodes[:,2] += outsoil.view(-1)#self.batchsize*self.sizegrid**2)
+
+        rot_pos = self.to_wheelframe(worient2d, self.relpos, self.batch)
+
+        window = self.sampleparts_rectangle(rot_pos)
+
+        sampled = ( torch.norm(self.xynodes - wheelpos[self.batch],dim=1) < self.wheel_radius )
+
+        window = torch.logical_and(window, sampled)
+
+        out = torch.cat([self.xynodes, self.batch.view(-1,1)], dim=-1)
+
+        return out[window].to("cpu")
+
+        """
+        out = out.to("cpu")
+        window = window.to("cpu")
+        return out[window]
+        """
     
     
     
 
+    #@nvtx.annotate("forward", color="purple")
     def forward(self, soilpos: Tensor, wheelpos: Tensor, quat: Tensor, glob: Tensor):
+
+        #torch.cuda.nvtx.range_push("forward")
 
         # Preprocess data
 
@@ -284,6 +323,14 @@ class Wrapper(torch.nn.Module):
 
         #with profiler.record_function("Post"):
 
-        soil0, soil1, soil2, soil3 = self.hmap2pcloud_rot(outsoil, self.wheelpos, self.worient2d)
+        # soil0, soil1, soil2, soil3 = self.hmap2pcloud_rot(outsoil, self.wheelpos, self.worient2d)
 
-        return soil0, soil1, soil2, soil3
+        # return soil0, soil1, soil2, soil3
+
+        outs = self.hmap2pcloud_rot(outsoil, self.wheelpos, self.worient2d)
+
+        #torch.cuda.synchronize()
+
+        #torch.cuda.nvtx.range_pop()
+
+        return outs

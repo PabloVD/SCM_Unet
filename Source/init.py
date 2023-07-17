@@ -137,7 +137,7 @@ print("Batch size:", batch_size)
 linkradius = 0.055
 #linkradius = 0.075
 # Number of hidden features in each MLP
-hidden_channels = 32
+hidden_channels = 64
 # Number of intermediate message passing layers
 n_layers = 3
 
