@@ -19,6 +19,7 @@ Terramechanics simulations make use of a variety of numerical methods such as th
 
 To train a NN in SCM Chrono simulations, follow the next steps:
 - Generate a Chrono training dataset, using [this branch](https://github.com/PabloVD/chrono/tree/scm_unet) of Chrono and running `chrono_runner.py`.
+- Preprocess stored data from simulations using `PreprocessSCM_singlesim.py`.
 - Specify settings in `Source/init.py` such as the path to the training dataset.
 - Train the model using `TrainChrono.py`.
 - Run the notebook `PlotHmaps.ipynb` for some visualizations of input and output data.
