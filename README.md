@@ -4,15 +4,13 @@
 ![Alt text](https://img.shields.io/pypi/pyversions/python-binance.svg)
 
 
-<img src="NNinChronoExample.png" width="600">
-
----
-
 ## Description
 
 Deep learning model to replace terramechanics computations in Chrono simulator.
 
-Terramechanics simulations make use of a variety of numerical methods such as the [Soil Contact Model (SCM)](https://core.ac.uk/download/pdf/11138706.pdf), a simple but effective approach to compute deformations and forces on the solid bodies, which is supported by the [Chrono simulator](https://projectchrono.org/). Here we present a deep learning-based method to replace the SCM computations to compute the deformations, with the aim of maintain the accuracy of the original simulator. This surrogate model is trained with oracle simulations generated with Chrono, and makes use of a height-map representation which is processed by a Unet network.
+Terramechanics simulations make use of a variety of numerical methods such as the [Soil Contact Model (SCM)](https://core.ac.uk/download/pdf/11138706.pdf), a simple but effective approach to compute deformations and forces on the solid bodies. Here we present a deep learning-based method to replace the SCM computations to compute the deformations, with the aim of maintain the accuracy of the original simulator. This surrogate model is trained with oracle simulations generated with the [Chrono simulator](https://projectchrono.org/), and makes use of a height-map representation which is processed by a Unet network. The NN receives height map and sinking information of the terrain around each wheel of the vehicle, and outputs the modified grid nodes below the wheel.
+
+<img src="NNinChronoExample.png" width="80%">
 
 
 ## Usage
@@ -28,7 +26,7 @@ To train a NN in SCM Chrono simulations, follow the next steps:
 
 ### Run the NN in Chrono
 
-NN integration in Chrono is currently supported for wheeled vehicles (Polaris specifically, see [here](https://github.com/PabloVD/chrono/tree/scm_unet/src/projects/polaris/scm_nn)) and for the rover Curiosity (see [here](https://github.com/PabloVD/chrono/tree/scm_unet/src/projects/polaris/scm_nn)). Only NN model trained with Polaris is provided. Support for terrain height maps is included.
+NN integration in Chrono is currently supported for wheeled vehicles (Polaris specifically, see [here](https://github.com/PabloVD/chrono/tree/scm_unet/src/projects/polaris/scm_nn)) and for the rover Curiosity (see [here](https://github.com/PabloVD/chrono/tree/scm_unet/src/projects/polaris/scm_nn)). Only NN model trained with Polaris is provided, although integration for running the NN with a rover and rocks in Chrono are included the Chrono [branch](https://github.com/PabloVD/chrono/tree/scm_unet). Support for terrain height maps is included.
 
 To run the trained NN in Chrono, follow the next steps:
 
@@ -43,8 +41,8 @@ To run the trained NN in Chrono, follow the next steps:
 or run using `chrono_runner.py`, specifying the path to terrain height maps if needed. See [here](https://github.com/PabloVD/chrono/tree/scm_unet/src/projects/polaris/scm_nn) for more info on the scripts with NN support. 
 - A couple of notebooks are provided to compare results using the NN with standard SCM. Once a SCM reference simulation or set of simulations have been run with their equivalent counterparts using the NN, use `SimulationsAnalysis.ipynb` to quantify the accuracy of the NN results comprared to the ground truth and `ChronoSCMTimer.ipynb` for performance comparisons.
 
-## Contact
 
+## Contact
 
 Feel free to contact me for comments or questions at <pablo.villanueva.domingo@gmail.com>.
 
