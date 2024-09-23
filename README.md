@@ -10,7 +10,7 @@ Deep learning model to replace terramechanics computations in Chrono simulator.
 
 Terramechanics simulations make use of a variety of numerical methods such as the [Soil Contact Model (SCM)](https://core.ac.uk/download/pdf/11138706.pdf), a simple but effective approach to compute deformations and forces on the solid bodies. Here we present a deep learning-based method to replace the SCM computations to compute the deformations, with the aim of maintain the accuracy of the original simulator. This surrogate model is trained with oracle simulations generated with the [Chrono simulator](https://projectchrono.org/), and makes use of a height-map representation which is processed by a Unet network. The NN receives height map and sinking information of the terrain around each wheel of the vehicle, and outputs the modified grid nodes below the wheel.
 
-<img src="scm_ nn.gif" width="100%">
+<img src="scm_ nn.gif" width="100%" alt="Video showcasing the neural network simulation versus the ground truth SCM one.">
 
 ## Usage
 
